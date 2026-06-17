@@ -14,18 +14,6 @@ reviews:
         dependency arrays, avoidable re-renders), and bundle-size impact of
         large library imports. This code is deployed on Cloudflare Workers; do
         not assume Node.js APIs are available.
-    - path: "src/worker/**"
-      instructions: >-
-        The deployment target is Cloudflare Workers — Node.js built-in APIs
-        (fs, path, the node:crypto module, Buffer, etc.) are NOT available;
-        flag any Node.js-only API usage and require Web/Workers-standard APIs
-        instead. Respect Workers limits (CPU time, subrequests). Input
-        validation must use zod; flag handlers that parse request input
-        without a zod schema. Ensure consistent error response format and
-        appropriate HTTP status codes. Watch for security issues (injection,
-        SSRF, excessive permissions, secrets leaking into logs). This is a
-        demo app — authentication is intentionally NOT required, so do NOT
-        flag missing auth/authorization.
     - path: "src/shared/**"
       instructions: >-
         Shared between the client and the Cloudflare Workers runtime. Do not

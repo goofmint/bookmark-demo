@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/client/App";
@@ -6,27 +6,28 @@ import type { Bookmark } from "../src/shared/bookmarks";
 
 const mockFetch = vi.fn<typeof fetch>();
 
+const user = { id: 1, email: "person@example.com" };
+
 const makeBookmark = (overrides: Partial<Bookmark> = {}): Bookmark => ({
   id: 1,
   url: "https://example.com/",
   title: "Example",
-  tags: "docs, demo",
-  memo: "Useful reference",
+  tags: "",
+  memo: "",
   createdAt: "2026-05-16T00:00:00.000Z",
   updatedAt: "2026-05-16T00:00:00.000Z",
   ...overrides
 });
 
-const bookmarksResponse = (
-  bookmarks: Bookmark[],
-  pagination: Partial<{ page: number; pageSize: number; totalCount: number; totalPages: number }> = {}
-) =>
+const meResponse = () => Response.json({ user });
+const unauthorized = () => Response.json({ error: "Authentication required." }, { status: 401 });
+const bookmarksResponse = (bookmarks: Bookmark[]) =>
   Response.json({
     bookmarks,
-    page: pagination.page ?? 1,
-    pageSize: pagination.pageSize ?? 10,
-    totalCount: pagination.totalCount ?? bookmarks.length,
-    totalPages: pagination.totalPages ?? 1
+    page: 1,
+    pageSize: 10,
+    totalCount: bookmarks.length,
+    totalPages: 1
   });
 
 beforeEach(() => {
@@ -40,255 +41,106 @@ afterEach(() => {
   mockFetch.mockReset();
 });
 
-describe("App", () => {
-  it("loads and renders bookmarks with tags and memo", async () => {
-    mockFetch.mockResolvedValueOnce(bookmarksResponse([makeBookmark()]));
+describe("App auth gate", () => {
+  it("checks the session with credentials included", async () => {
+    mockFetch.mockResolvedValueOnce(unauthorized());
 
     render(<App />);
 
-    expect(await screen.findByRole("link", { name: "Example" })).toHaveAttribute(
-      "href",
-      "https://example.com/"
-    );
-    expect(screen.getByText("docs")).toBeInTheDocument();
-    expect(screen.getByText("demo")).toBeInTheDocument();
-    expect(screen.getByText("Useful reference")).toBeInTheDocument();
+    await screen.findByLabelText("Email");
+    expect(mockFetch).toHaveBeenNthCalledWith(1, "/api/auth/me", { credentials: "include" });
   });
 
-  it("adds a bookmark from the URL-only form and refreshes the first page", async () => {
-    mockFetch
-      .mockResolvedValueOnce(bookmarksResponse([]))
-      .mockResolvedValueOnce(Response.json({ bookmark: makeBookmark({ id: 2 }) }, { status: 201 }))
-      .mockResolvedValueOnce(bookmarksResponse([makeBookmark({ id: 2 })]));
+  it("shows the login screen when there is no valid session", async () => {
+    mockFetch.mockResolvedValueOnce(unauthorized());
 
     render(<App />);
 
-    await screen.findByText("No bookmarks yet.");
-    await userEvent.type(screen.getByLabelText("URL"), "https://example.com");
-    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Bookmarks")).not.toBeInTheDocument();
+  });
 
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/bookmarks", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          url: "https://example.com"
-        })
-      });
-    });
+  it("shows the bookmark app when a session exists", async () => {
+    mockFetch.mockResolvedValueOnce(meResponse()).mockResolvedValueOnce(bookmarksResponse([makeBookmark()]));
+
+    render(<App />);
 
     expect(await screen.findByRole("link", { name: "Example" })).toBeInTheDocument();
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1");
+    expect(screen.getByText("person@example.com")).toBeInTheDocument();
   });
 
-  it("edits a bookmark and refreshes the current page", async () => {
+  it("toggles between login and account creation", async () => {
+    mockFetch.mockResolvedValueOnce(unauthorized());
+
+    render(<App />);
+
+    await screen.findByLabelText("Email");
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Need an account? Create one" }));
+
+    expect(screen.getByRole("button", { name: "Create account" })).toBeInTheDocument();
+  });
+
+  it("logs in and then shows the bookmark app", async () => {
     mockFetch
-      .mockResolvedValueOnce(bookmarksResponse([makeBookmark()]))
-      .mockResolvedValueOnce(Response.json({ bookmark: makeBookmark({ tags: "updated" }) }))
-      .mockResolvedValueOnce(bookmarksResponse([makeBookmark({ tags: "updated" })]));
+      .mockResolvedValueOnce(unauthorized()) // /api/auth/me
+      .mockResolvedValueOnce(meResponse()) // /api/auth/login
+      .mockResolvedValueOnce(bookmarksResponse([makeBookmark()])); // /api/bookmarks
+
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("Email"), "person@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "password123");
+    await userEvent.click(screen.getByRole("button", { name: "Log in" }));
+
+    expect(await screen.findByRole("link", { name: "Example" })).toBeInTheDocument();
+    expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email: "person@example.com", password: "password123" })
+    });
+  });
+
+  it("shows an error when login fails", async () => {
+    mockFetch
+      .mockResolvedValueOnce(unauthorized())
+      .mockResolvedValueOnce(Response.json({ error: "Invalid email or password." }, { status: 401 }));
+
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("Email"), "person@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "wrong-password");
+    await userEvent.click(screen.getByRole("button", { name: "Log in" }));
+
+    expect(await screen.findByText("Invalid email or password.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+  });
+
+  it("returns to the login screen after logging out", async () => {
+    mockFetch
+      .mockResolvedValueOnce(meResponse()) // /api/auth/me
+      .mockResolvedValueOnce(bookmarksResponse([makeBookmark()])) // /api/bookmarks
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // /api/auth/logout
 
     render(<App />);
 
     await screen.findByRole("link", { name: "Example" });
-    await userEvent.click(screen.getByRole("button", { name: "Edit Example" }));
-    const editTagsInput = screen.getByLabelText("Tags");
-    await userEvent.clear(editTagsInput);
-    await userEvent.type(editTagsInput, "updated");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
 
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/bookmarks/1", {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          url: "https://example.com/",
-          tags: "updated",
-          memo: "Useful reference"
-        })
-      });
-    });
-
-    expect(await screen.findByText("updated")).toBeInTheDocument();
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1");
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Example" })).not.toBeInTheDocument();
   });
 
-  it("confirms deletion before deleting and refreshing the list", async () => {
-    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+  it("returns to the login screen when a bookmark request is unauthorized", async () => {
     mockFetch
-      .mockResolvedValueOnce(bookmarksResponse([makeBookmark()]))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(bookmarksResponse([]));
+      .mockResolvedValueOnce(meResponse()) // /api/auth/me succeeds
+      .mockResolvedValueOnce(unauthorized()); // session expires before /api/bookmarks
 
     render(<App />);
 
-    await screen.findByRole("link", { name: "Example" });
-    await userEvent.click(screen.getByRole("button", { name: "Delete Example" }));
-
-    expect(window.confirm).toHaveBeenCalledWith('Delete "Example"?');
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/bookmarks/1", {
-        method: "DELETE"
-      });
-    });
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1");
-  });
-
-  it("loads the next page", async () => {
-    mockFetch
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark()], { page: 1, totalCount: 11, totalPages: 2 })
-      )
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark({ id: 2, title: "Next page" })], {
-          page: 2,
-          totalCount: 11,
-          totalPages: 2
-        })
-      );
-
-    render(<App />);
-
-    await screen.findByRole("link", { name: "Example" });
-    await userEvent.click(screen.getByRole("button", { name: "Next" }));
-
-    expect(await screen.findByRole("link", { name: "Next page" })).toBeInTheDocument();
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=2");
-  });
-
-  it("searches bookmarks and keeps the query in pagination", async () => {
-    mockFetch
-      .mockResolvedValueOnce(bookmarksResponse([]))
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark({ title: "Search result" })], {
-          page: 1,
-          totalCount: 11,
-          totalPages: 2
-        })
-      )
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark({ id: 2, title: "More results" })], {
-          page: 2,
-          totalCount: 11,
-          totalPages: 2
-        })
-      );
-
-    render(<App />);
-
-    await screen.findByText("No bookmarks yet.");
-    await userEvent.type(screen.getByLabelText("Search bookmarks"), "bookmark social");
-    await userEvent.click(screen.getByRole("button", { name: "Search" }));
-
-    expect(await screen.findByRole("link", { name: "Search result" })).toBeInTheDocument();
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1&q=bookmark+social");
-    expect(window.location.search).toBe("?q=bookmark+social");
-
-    await userEvent.click(screen.getByRole("button", { name: "Next" }));
-
-    expect(await screen.findByRole("link", { name: "More results" })).toBeInTheDocument();
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=2&q=bookmark+social");
-    expect(window.location.search).toBe("?page=2&q=bookmark+social");
-  });
-
-  it("keeps the URL in sync after creating while search is active", async () => {
-    mockFetch
-      .mockResolvedValueOnce(bookmarksResponse([]))
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark({ title: "Search result" })], {
-          page: 1,
-          totalCount: 1,
-          totalPages: 1
-        })
-      )
-      .mockResolvedValueOnce(Response.json({ bookmark: makeBookmark({ id: 2 }) }, { status: 201 }))
-      .mockResolvedValueOnce(bookmarksResponse([makeBookmark({ id: 2 })]));
-
-    render(<App />);
-
-    await screen.findByText("No bookmarks yet.");
-    await userEvent.type(screen.getByLabelText("Search bookmarks"), "docs");
-    await userEvent.click(screen.getByRole("button", { name: "Search" }));
-    await screen.findByRole("link", { name: "Search result" });
-    await userEvent.type(screen.getByLabelText("URL"), "https://example.com");
-    await userEvent.click(screen.getByRole("button", { name: "Add" }));
-
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1&q=docs");
-    });
-    expect(window.location.search).toBe("?q=docs");
-  });
-
-  it("keeps the URL in sync after deleting the last bookmark on a page", async () => {
-    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
-    window.history.replaceState(null, "", "/?page=2&q=docs");
-    mockFetch
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark()], { page: 2, totalCount: 11, totalPages: 2 })
-      )
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(
-        bookmarksResponse([makeBookmark({ id: 2 })], { page: 1, totalCount: 10, totalPages: 1 })
-      );
-
-    render(<App />);
-
-    await screen.findByRole("link", { name: "Example" });
-    await userEvent.click(screen.getByRole("button", { name: "Delete Example" }));
-
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1&q=docs");
-    });
-    expect(window.location.search).toBe("?q=docs");
-  });
-
-  it("loads the initial search state from the URL", async () => {
-    window.history.replaceState(null, "", "/?page=2&q=docs");
-    mockFetch.mockResolvedValueOnce(
-      bookmarksResponse([makeBookmark({ title: "URL state result" })], {
-        page: 2,
-        totalCount: 11,
-        totalPages: 2
-      })
-    );
-
-    render(<App />);
-
-    expect(await screen.findByRole("link", { name: "URL state result" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Search bookmarks")).toHaveValue("docs");
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=2&q=docs");
-  });
-
-  it("shows error and preserves query on failed search", async () => {
-    window.history.replaceState(null, "", "/?q=fail");
-    mockFetch.mockResolvedValueOnce(Response.json({ error: "Search failed." }, { status: 500 }));
-
-    render(<App />);
-
-    expect(await screen.findByText("Search failed.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Search bookmarks")).toHaveValue("fail");
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1&q=fail");
-    expect(window.location.search).toBe("?q=fail");
-  });
-
-  it("reloads bookmarks when browser history changes", async () => {
-    mockFetch
-      .mockResolvedValueOnce(bookmarksResponse([]))
-      .mockResolvedValueOnce(bookmarksResponse([makeBookmark({ title: "History result" })]));
-
-    render(<App />);
-
-    await screen.findByText("No bookmarks yet.");
-    act(() => {
-      window.history.pushState(null, "", "/?q=history");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-
-    expect(await screen.findByRole("link", { name: "History result" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Search bookmarks")).toHaveValue("history");
-    expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1&q=history");
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
   });
 });
