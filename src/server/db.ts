@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Bookmark } from "../shared/bookmarks";
+import type { AuthUser } from "../shared/auth";
 
 export type BookmarkRow = {
   id: number;
@@ -31,6 +32,19 @@ export type BookmarkPage = {
 export type SearchFilter = {
   sql: string;
   bindings: string[];
+};
+
+export type UserRow = {
+  id: number;
+  email: string;
+  password_hash: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SessionRow = {
+  user_id: number;
+  expires_at: string;
 };
 
 const toBookmark = (row: BookmarkRow): Bookmark => ({
@@ -135,6 +149,59 @@ export class BookmarkDatabase {
   deleteBookmark(id: number): boolean {
     const result = this.db.prepare("DELETE FROM bookmarks WHERE id = ?").run(id);
     return result.changes > 0;
+  }
+
+  // Throws on a duplicate email (UNIQUE constraint); the caller maps that to a
+  // 409 response.
+  createUser(email: string, passwordHash: string): AuthUser {
+    const row = this.db
+      .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id, email")
+      .get(email, passwordHash) as { id: number; email: string } | undefined;
+
+    if (!row) {
+      throw new Error("Failed to create user.");
+    }
+
+    return { id: row.id, email: row.email };
+  }
+
+  findUserByEmail(email: string): UserRow | null {
+    const row = this.db
+      .prepare("SELECT id, email, password_hash, created_at, updated_at FROM users WHERE email = ?")
+      .get(email) as UserRow | undefined;
+
+    return row ?? null;
+  }
+
+  createSession(tokenHash: string, userId: number, expiresAt: string): void {
+    this.db
+      .prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
+      .run(tokenHash, userId, expiresAt);
+  }
+
+  // Returns the session only when it exists and has not expired.
+  findValidSession(tokenHash: string, now: string): SessionRow | null {
+    const row = this.db
+      .prepare("SELECT user_id, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?")
+      .get(tokenHash, now) as SessionRow | undefined;
+
+    return row ?? null;
+  }
+
+  findUserById(id: number): AuthUser | null {
+    const row = this.db.prepare("SELECT id, email FROM users WHERE id = ?").get(id) as
+      | { id: number; email: string }
+      | undefined;
+
+    return row ? { id: row.id, email: row.email } : null;
+  }
+
+  deleteSession(tokenHash: string): void {
+    this.db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
+  }
+
+  deleteExpiredSessions(now: string): void {
+    this.db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
   }
 
   close() {
