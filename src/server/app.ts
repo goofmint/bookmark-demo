@@ -1,11 +1,26 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Hono } from "hono";
 import type { BookmarkDatabase } from "./db";
 import type { CreateBookmarkRequest, UpdateBookmarkRequest } from "../shared/bookmarks";
 import { fetchPageTitle, normalizeUrl } from "./title";
+import { storeOgpImage } from "./storage";
 
 export type AppDependencies = {
   db: BookmarkDatabase;
+  storageDir: string;
 };
+
+const OGP_MIME_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  avif: "image/avif",
+};
+
+// Only allow <uuid>.<ext> filenames to prevent directory traversal
+const OGP_NAME_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif|avif)$/;
 
 const PAGE_SIZE = 10;
 
@@ -68,7 +83,7 @@ const buildSearchFilter = (terms: string[]) => {
 const isUniqueError = (error: unknown) =>
   error instanceof Error && error.message.toLowerCase().includes("unique");
 
-export const createApp = ({ db }: AppDependencies) => {
+export const createApp = ({ db, storageDir }: AppDependencies) => {
   const app = new Hono();
 
   app.get("/api/bookmarks", (c) => {
@@ -103,10 +118,13 @@ export const createApp = ({ db }: AppDependencies) => {
 
     const tags = cleanTags((payload as CreateBookmarkRequest).tags);
     const memo = cleanText((payload as CreateBookmarkRequest).memo);
-    const title = (await fetchPageTitle(url)) ?? url;
+    const [title, ogpImageUrl] = await Promise.all([
+      fetchPageTitle(url).then((t) => t ?? url),
+      storeOgpImage(url, storageDir)
+    ]);
 
     try {
-      const bookmark = db.createBookmark({ url, title, tags, memo });
+      const bookmark = db.createBookmark({ url, title, tags, memo, ogpImageUrl });
       return c.json({ bookmark }, 201);
     } catch (error) {
       if (isUniqueError(error)) {
@@ -145,10 +163,13 @@ export const createApp = ({ db }: AppDependencies) => {
 
     const tags = cleanTags((payload as UpdateBookmarkRequest).tags);
     const memo = cleanText((payload as UpdateBookmarkRequest).memo);
-    const title = (await fetchPageTitle(url)) ?? url;
+    const [title, ogpImageUrl] = await Promise.all([
+      fetchPageTitle(url).then((t) => t ?? url),
+      storeOgpImage(url, storageDir)
+    ]);
 
     try {
-      const bookmark = db.updateBookmark(id, { url, title, tags, memo });
+      const bookmark = db.updateBookmark(id, { url, title, tags, memo, ogpImageUrl });
       if (!bookmark) {
         return c.json({ error: "Bookmark not found." }, 404);
       }
@@ -161,6 +182,33 @@ export const createApp = ({ db }: AppDependencies) => {
 
       return c.json({ error: "Failed to update bookmark." }, 500);
     }
+  });
+
+  app.get("/ogp/:name", (c) => {
+    const name = c.req.param("name");
+
+    if (!OGP_NAME_PATTERN.test(name)) {
+      return c.json({ error: "Not found." }, 404);
+    }
+
+    const ext = name.split(".").pop()!;
+    const mime = OGP_MIME_TYPES[ext];
+
+    let raw: Buffer;
+    try {
+      raw = readFileSync(join(storageDir, name));
+    } catch {
+      return c.json({ error: "Not found." }, 404);
+    }
+
+    // new Uint8Array(raw) converts Buffer<ArrayBufferLike> to Uint8Array<ArrayBuffer>,
+    // which satisfies the BodyInit / BufferSource constraint
+    return new Response(new Uint8Array(raw), {
+      headers: {
+        "content-type": mime,
+        "cache-control": "public, max-age=86400, immutable"
+      }
+    });
   });
 
   app.delete("/api/bookmarks/:id", (c) => {

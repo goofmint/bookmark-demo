@@ -12,6 +12,7 @@ const makeBookmark = (overrides: Partial<Bookmark> = {}): Bookmark => ({
   title: "Example",
   tags: "docs, demo",
   memo: "Useful reference",
+  ogpImageUrl: "",
   createdAt: "2026-05-16T00:00:00.000Z",
   updatedAt: "2026-05-16T00:00:00.000Z",
   ...overrides
@@ -290,5 +291,27 @@ describe("App", () => {
     expect(await screen.findByRole("link", { name: "History result" })).toBeInTheDocument();
     expect(screen.getByLabelText("Search bookmarks")).toHaveValue("history");
     expect(mockFetch).toHaveBeenLastCalledWith("/api/bookmarks?page=1&q=history");
+  });
+
+  it("shows a thumbnail when ogpImageUrl is set", async () => {
+    mockFetch.mockResolvedValueOnce(
+      bookmarksResponse([makeBookmark({ ogpImageUrl: "/ogp/test.jpg" })])
+    );
+
+    render(<App />);
+
+    await screen.findByRole("link", { name: "Example" });
+    const thumb = document.querySelector(".bookmark-thumb");
+    expect(thumb).toBeInTheDocument();
+    expect(thumb).toHaveAttribute("src", "/ogp/test.jpg");
+  });
+
+  it("does not show a thumbnail when ogpImageUrl is empty", async () => {
+    mockFetch.mockResolvedValueOnce(bookmarksResponse([makeBookmark({ ogpImageUrl: "" })]));
+
+    render(<App />);
+
+    await screen.findByRole("link", { name: "Example" });
+    expect(document.querySelector(".bookmark-thumb")).not.toBeInTheDocument();
   });
 });
