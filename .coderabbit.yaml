@@ -8,54 +8,24 @@ reviews:
   path_instructions:
     - path: "src/client/**"
       instructions: >-
-        Review for accessibility (WCAG 2.1 AA: alt attributes, aria labels,
-        keyboard navigation), XSS risks (especially dangerouslySetInnerHTML and
-        unsanitized user input), correct React hooks usage (rules of hooks,
-        dependency arrays, avoidable re-renders), and bundle-size impact of
-        large library imports. This code is deployed on Cloudflare Workers; do
-        not assume Node.js APIs are available.
+        Review for accessibility (WCAG 2.1 AA: alt attributes, aria labels, keyboard navigation), XSS risks (especially dangerouslySetInnerHTML and unsanitized user input), correct React hooks usage (rules of hooks, dependency arrays, avoidable re-renders), and bundle-size impact of large library imports. This code is deployed on Cloudflare Workers; do not assume Node.js APIs are available.
     - path: "src/worker/**"
       instructions: >-
-        The deployment target is Cloudflare Workers — Node.js built-in APIs
-        (fs, path, the node:crypto module, Buffer, etc.) are NOT available;
-        flag any Node.js-only API usage and require Web/Workers-standard APIs
-        instead. Respect Workers limits (CPU time, subrequests). Input
-        validation must use zod; flag handlers that parse request input
-        without a zod schema. Ensure consistent error response format and
-        appropriate HTTP status codes. Watch for security issues (injection,
-        SSRF, excessive permissions, secrets leaking into logs). This is a
-        demo app — authentication is intentionally NOT required, so do NOT
-        flag missing auth/authorization.
+        The deployment target is Cloudflare Workers — Node.js built-in APIs (fs, path, the node:crypto module, Buffer, etc.) are NOT available; flag any Node.js-only API usage and require Web/Workers-standard APIs instead. Respect Workers limits (CPU time, subrequests). Input validation must use zod; flag handlers that parse request input without a zod schema. Ensure consistent error response format and appropriate HTTP status codes. Watch for security issues (injection, SSRF, excessive permissions, secrets leaking into logs). This is a demo app — authentication is intentionally NOT required, so do NOT flag missing auth/authorization.
     - path: "src/shared/**"
       instructions: >-
-        Shared between the client and the Cloudflare Workers runtime. Do not
-        introduce Node.js-only APIs; keep it isomorphic and Web-standard. Use
-        zod for any validation logic.
+        Shared between the client and the Cloudflare Workers runtime. Do not introduce Node.js-only APIs; keep it isomorphic and Web-standard. Use zod for any validation logic.
     - path: "migrations/**/*.sql"
       instructions: >-
-        Verify SQLite-compatible syntax valid for Cloudflare D1; flag risky
-        schema changes unsupported by SQLite (e.g., unsupported ALTER forms).
-        Require a documented rollback/down path or explicitly note its
-        absence. Check for missing indexes on foreign keys and frequently
-        queried columns, and missing NOT NULL constraints or default values
-        where appropriate.
+        Verify SQLite-compatible syntax valid for Cloudflare D1; flag risky schema changes unsupported by SQLite (e.g., unsupported ALTER forms). Require a documented rollback/down path or explicitly note its absence. Check for missing indexes on foreign keys and frequently queried columns, and missing NOT NULL constraints or default values where appropriate.
     - path: "test/**"
       instructions: >-
-        Assertions must test actual behavior, not just shape or existence.
-        Flag over-mocking that prevents tests from exercising real behavior.
-        Require coverage of edge cases and error paths. Tests must be
-        independent with no inter-test ordering dependencies. Do NOT allow
-        conditional logic (if statements) inside tests. Do NOT allow skipped
-        tests (.skip, it.skip, describe.skip, test.skip).
+        Assertions must test actual behavior, not just shape or existence. Flag over-mocking that prevents tests from exercising real behavior. Require coverage of edge cases and error paths. Tests must be independent with no inter-test ordering dependencies. Do NOT allow conditional logic (if statements) inside tests. Do NOT allow skipped tests (.skip, it.skip, describe.skip, test.skip).
     - path: "README.md"
       instructions: >-
-        Detect broken or stale links. Verify code samples are accurate and
-        runnable. Ensure setup and usage instructions match the actual npm
-        scripts and commands in package.json. Keep writing style and
-        terminology consistent.
+        Detect broken or stale links. Verify code samples are accurate and runnable. Ensure setup and usage instructions match the actual npm scripts and commands in package.json. Keep writing style and terminology consistent.
     - path: "USAGE.md"
       instructions: >-
-        Detect broken or stale links. Verify code samples are accurate and
-        runnable. Ensure setup and usage instructions match the actual npm
-        scripts and commands in package.json. Keep writing style and
-        terminology consistent.
+        Detect broken or stale links. Verify code samples are accurate and runnable. Ensure setup and usage instructions match the actual npm scripts and commands in package.json. Keep writing style and terminology consistent.
+    - path: src/server/**
+      instructions: Write this subtree for the local Node/Hono runtime. Using Node built-ins and `node:`-prefixed imports is expected here; do not apply Cloudflare Workers constraints or flag Node-only APIs as portability issues.
