@@ -13,12 +13,14 @@ const rootDir = process.cwd();
 const dbPath = resolve(process.env.BOOKMARK_DB_PATH ?? join(rootDir, "data", "bookmarks.sqlite"));
 const migrationsDir = resolve(rootDir, "migrations");
 const clientDir = resolve(rootDir, "dist", "client");
+// 取得した OGP 画像の保存先。GET /ogp/:name がここから読み出す。
+const storageDir = resolve(process.env.BOOKMARK_OGP_DIR ?? join(rootDir, "data", "ogp"));
 const port = Number(process.env.PORT ?? "8787");
 
 const db = new BookmarkDatabase(dbPath);
 db.migrate(migrationsDir);
 
-const app = createApp({ db });
+const app = createApp({ db, storageDir });
 
 if (existsSync(clientDir)) {
   app.use("/*", serveStatic({ root: clientDir }));

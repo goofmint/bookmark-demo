@@ -1,13 +1,20 @@
+import { join } from "node:path";
 import { Hono } from "hono";
 import type { BookmarkDatabase } from "./db";
 import type { CreateBookmarkRequest, UpdateBookmarkRequest } from "../shared/bookmarks";
+import { readOgpImage, storeOgpImage } from "./storage";
 import { fetchPageTitle, normalizeUrl } from "./title";
 
 export type AppDependencies = {
   db: BookmarkDatabase;
+  // OGP 画像の保存先ディレクトリ。未指定なら data/ogp を使う。
+  storageDir?: string;
 };
 
 const PAGE_SIZE = 10;
+
+// ファイル名は UUID なので内容が変わることはなく、長期キャッシュしても安全。
+const OGP_CACHE_CONTROL = "public, max-age=86400, immutable";
 
 const cleanText = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
@@ -68,7 +75,7 @@ const buildSearchFilter = (terms: string[]) => {
 const isUniqueError = (error: unknown) =>
   error instanceof Error && error.message.toLowerCase().includes("unique");
 
-export const createApp = ({ db }: AppDependencies) => {
+export const createApp = ({ db, storageDir = join(process.cwd(), "data", "ogp") }: AppDependencies) => {
   const app = new Hono();
 
   app.get("/api/bookmarks", (c) => {
@@ -104,9 +111,11 @@ export const createApp = ({ db }: AppDependencies) => {
     const tags = cleanTags((payload as CreateBookmarkRequest).tags);
     const memo = cleanText((payload as CreateBookmarkRequest).memo);
     const title = (await fetchPageTitle(url)) ?? url;
+    // storeOgpImage は失敗しても空文字を返すだけなので、ブックマーク保存は止まらない。
+    const ogpImageUrl = await storeOgpImage(url, storageDir);
 
     try {
-      const bookmark = db.createBookmark({ url, title, tags, memo });
+      const bookmark = db.createBookmark({ url, title, tags, memo, ogpImageUrl });
       return c.json({ bookmark }, 201);
     } catch (error) {
       if (isUniqueError(error)) {
@@ -146,9 +155,11 @@ export const createApp = ({ db }: AppDependencies) => {
     const tags = cleanTags((payload as UpdateBookmarkRequest).tags);
     const memo = cleanText((payload as UpdateBookmarkRequest).memo);
     const title = (await fetchPageTitle(url)) ?? url;
+    // 作成時と同じく、OGP 画像の取得に失敗しても更新自体は続行する。
+    const ogpImageUrl = await storeOgpImage(url, storageDir);
 
     try {
-      const bookmark = db.updateBookmark(id, { url, title, tags, memo });
+      const bookmark = db.updateBookmark(id, { url, title, tags, memo, ogpImageUrl });
       if (!bookmark) {
         return c.json({ error: "Bookmark not found." }, 404);
       }
@@ -174,6 +185,20 @@ export const createApp = ({ db }: AppDependencies) => {
     }
 
     return c.body(null, 204);
+  });
+
+  // ローカルに保存した OGP 画像を配信する。保存時の content-type をそのまま返す。
+  app.get("/ogp/:name", async (c) => {
+    const image = await readOgpImage(c.req.param("name"), storageDir);
+
+    if (!image) {
+      return c.json({ error: "Image not found." }, 404);
+    }
+
+    return c.body(image.body, 200, {
+      "content-type": image.contentType,
+      "cache-control": OGP_CACHE_CONTROL
+    });
   });
 
   return app;

@@ -392,6 +392,15 @@ export function App() {
             ) : (
               <>
                 <div className="bookmark-content">
+                  {bookmark.ogpImageUrl ? (
+                    // OGP 画像を保存できたときだけサムネイルを出す。空文字なら何も描画しない。
+                    <img
+                      className="bookmark-thumbnail"
+                      src={bookmark.ogpImageUrl}
+                      alt={`Preview of ${bookmark.title}`}
+                      loading="lazy"
+                    />
+                  ) : null}
                   <a href={bookmark.url} target="_blank" rel="noreferrer">
                     {bookmark.title}
                   </a>

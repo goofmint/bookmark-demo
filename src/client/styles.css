@@ -166,6 +166,16 @@ h1 {
   gap: 10px;
 }
 
+.bookmark-thumbnail {
+  width: 100%;
+  max-width: 240px;
+  aspect-ratio: 1200 / 630;
+  object-fit: cover;
+  background: #f1f4f8;
+  border: 1px solid #d7dde5;
+  border-radius: 6px;
+}
+
 .bookmark-item a {
   overflow-wrap: anywhere;
   color: #0f172a;

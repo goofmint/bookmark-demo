@@ -12,6 +12,7 @@ const makeBookmark = (overrides: Partial<Bookmark> = {}): Bookmark => ({
   title: "Example",
   tags: "docs, demo",
   memo: "Useful reference",
+  ogpImageUrl: "",
   createdAt: "2026-05-16T00:00:00.000Z",
   updatedAt: "2026-05-16T00:00:00.000Z",
   ...overrides
@@ -53,6 +54,28 @@ describe("App", () => {
     expect(screen.getByText("docs")).toBeInTheDocument();
     expect(screen.getByText("demo")).toBeInTheDocument();
     expect(screen.getByText("Useful reference")).toBeInTheDocument();
+  });
+
+  it("renders the OGP thumbnail when the bookmark has one", async () => {
+    mockFetch.mockResolvedValueOnce(
+      bookmarksResponse([makeBookmark({ ogpImageUrl: "/ogp/6410a002-6af1-4933-b15d-a856f3eb71cc.png" })])
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("img", { name: "Preview of Example" })).toHaveAttribute(
+      "src",
+      "/ogp/6410a002-6af1-4933-b15d-a856f3eb71cc.png"
+    );
+  });
+
+  it("omits the thumbnail when the bookmark has no OGP image", async () => {
+    mockFetch.mockResolvedValueOnce(bookmarksResponse([makeBookmark({ ogpImageUrl: "" })]));
+
+    render(<App />);
+
+    await screen.findByRole("link", { name: "Example" });
+    expect(screen.queryByRole("img", { name: "Preview of Example" })).not.toBeInTheDocument();
   });
 
   it("adds a bookmark from the URL-only form and refreshes the first page", async () => {

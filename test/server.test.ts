@@ -6,20 +6,42 @@ import { createApp } from "../src/server/app";
 import { BookmarkDatabase } from "../src/server/db";
 
 let tempDir: string;
+let storageDir: string;
 let db: BookmarkDatabase;
 
-const createTestApp = () => createApp({ db });
+const createTestApp = () => createApp({ db, storageDir });
 
-const addBookmark = (input: { url: string; title: string; tags?: string; memo?: string }) =>
+const addBookmark = (input: { url: string; title: string; tags?: string; memo?: string; ogpImageUrl?: string }) =>
   db.createBookmark({
     url: input.url,
     title: input.title,
     tags: input.tags ?? "",
-    memo: input.memo ?? ""
+    memo: input.memo ?? "",
+    ogpImageUrl: input.ogpImageUrl ?? ""
   });
+
+// PNG のシグネチャだけの最小データ。保存と配信の確認に使う。
+const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// URL ごとに返すレスポンスを決める stub。title 取得と OGP 取得の両方を同じ形で扱える。
+const stubFetchByUrl = (responses: Record<string, () => Response>) =>
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const respond = responses[url];
+
+      if (!respond) {
+        return new Response("not found", { status: 404 });
+      }
+
+      return respond();
+    })
+  );
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "bookmark-demo-"));
+  storageDir = join(tempDir, "ogp");
   db = new BookmarkDatabase(join(tempDir, "bookmarks.sqlite"));
   db.migrate(join(process.cwd(), "migrations"));
 });
@@ -153,5 +175,44 @@ describe("local server bookmarks API", () => {
     });
     expect(deleted.status).toBe(204);
     expect(missing.status).toBe(404);
+  });
+
+  it("stores the OGP image on create and serves it from /ogp/:name", async () => {
+    stubFetchByUrl({
+      "https://example.com/page": () =>
+        new Response(
+          '<title>Example</title><meta property="og:image" content="https://example.com/hero.png">',
+          { headers: { "content-type": "text/html; charset=utf-8" } }
+        ),
+      "https://example.com/hero.png": () =>
+        new Response(PNG_BYTES, { headers: { "content-type": "image/png" } })
+    });
+
+    const app = createTestApp();
+    const created = await app.request("http://localhost/api/bookmarks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/page" })
+    });
+    const body = (await created.json()) as { bookmark: { ogpImageUrl: string } };
+
+    expect(created.status).toBe(201);
+    expect(body.bookmark.ogpImageUrl).toMatch(/^\/ogp\/[0-9a-f-]{36}\.png$/);
+
+    const image = await app.request(`http://localhost${body.bookmark.ogpImageUrl}`);
+
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect(image.headers.get("cache-control")).toBe("public, max-age=86400, immutable");
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(PNG_BYTES);
+  });
+
+  it("returns 404 when the requested OGP image is missing", async () => {
+    const response = await createTestApp().request(
+      "http://localhost/ogp/6410a002-6af1-4933-b15d-a856f3eb71cc.png"
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "Image not found." });
   });
 });
