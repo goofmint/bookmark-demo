@@ -10,13 +10,41 @@ let db: BookmarkDatabase;
 
 const createTestApp = () => createApp({ db });
 
-const addBookmark = (input: { url: string; title: string; tags?: string; memo?: string }) =>
-  db.createBookmark({
+const userIdFor = (email = "tester@example.com") => {
+  const user = db.findUserByEmail(email);
+  if (!user) {
+    throw new Error(`No user for ${email}.`);
+  }
+
+  return user.id;
+};
+
+const addBookmark = (
+  input: { url: string; title: string; tags?: string; memo?: string },
+  userId = userIdFor()
+) =>
+  db.createBookmark(userId, {
     url: input.url,
     title: input.title,
     tags: input.tags ?? "",
     memo: input.memo ?? ""
   });
+
+// Bookmark routes now require a session. Sign up to obtain the session cookie
+// and reuse it on the protected requests.
+const signUp = async (email = "tester@example.com", password = "password123") => {
+  const response = await createTestApp().request("http://localhost/api/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const setCookie = response.headers.get("set-cookie");
+  if (!setCookie) {
+    throw new Error("Sign up did not return a session cookie.");
+  }
+
+  return setCookie.split(";")[0];
+};
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "bookmark-demo-"));
@@ -37,7 +65,47 @@ describe("local server bookmarks API", () => {
     expect(response.status).toBe(404);
   });
 
+  it("requires authentication for every bookmark route", async () => {
+    const list = await createTestApp().request("http://localhost/api/bookmarks");
+    const create = await createTestApp().request("http://localhost/api/bookmarks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com" })
+    });
+    const update = await createTestApp().request("http://localhost/api/bookmarks/1", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com" })
+    });
+    const remove = await createTestApp().request("http://localhost/api/bookmarks/1", {
+      method: "DELETE"
+    });
+
+    expect(list.status).toBe(401);
+    expect(create.status).toBe(401);
+    expect(update.status).toBe(401);
+    expect(remove.status).toBe(401);
+  });
+
+  it("does not create a bookmark for an unauthenticated request", async () => {
+    await createTestApp().request("http://localhost/api/bookmarks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com" })
+    });
+
+    const cookie = await signUp();
+    const response = await createTestApp().request("http://localhost/api/bookmarks", {
+      headers: { cookie }
+    });
+    const body = (await response.json()) as { totalCount: number };
+
+    // The rejected request above must not have written anything to the database.
+    expect(body.totalCount).toBe(0);
+  });
+
   it("clamps an out-of-range page before selecting bookmarks", async () => {
+    const cookie = await signUp();
     for (let index = 1; index <= 21; index += 1) {
       addBookmark({
         url: `https://example.com/${index}`,
@@ -45,7 +113,9 @@ describe("local server bookmarks API", () => {
       });
     }
 
-    const response = await createTestApp().request("http://localhost/api/bookmarks?page=99");
+    const response = await createTestApp().request("http://localhost/api/bookmarks?page=99", {
+      headers: { cookie }
+    });
     const body = await response.json() as {
       bookmarks: Array<{ id: number }>;
       page: number;
@@ -63,6 +133,7 @@ describe("local server bookmarks API", () => {
   });
 
   it("uses AND search terms across bookmark fields", async () => {
+    const cookie = await signUp();
     addBookmark({
       url: "https://example.com/hono",
       title: "Hono",
@@ -82,7 +153,9 @@ describe("local server bookmarks API", () => {
       memo: "Client"
     });
 
-    const response = await createTestApp().request("http://localhost/api/bookmarks?q=hono%20database");
+    const response = await createTestApp().request("http://localhost/api/bookmarks?q=hono%20database", {
+      headers: { cookie }
+    });
     const body = await response.json() as { bookmarks: Array<{ title: string }>; totalCount: number };
 
     expect(response.status).toBe(200);
@@ -96,10 +169,11 @@ describe("local server bookmarks API", () => {
       vi.fn(async () => new Response("<title>Example</title>", { headers: { "content-type": "text/html" } }))
     );
 
+    const cookie = await signUp();
     const app = createTestApp();
     const request = {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({ url: "https://example.com/#top" })
     };
     const created = await app.request("http://localhost/api/bookmarks", request);
@@ -120,6 +194,7 @@ describe("local server bookmarks API", () => {
       "fetch",
       vi.fn(async () => new Response("<title>Updated</title>", { headers: { "content-type": "text/html" } }))
     );
+    const cookie = await signUp();
     const bookmark = addBookmark({
       url: "https://example.com/old",
       title: "Old"
@@ -128,7 +203,7 @@ describe("local server bookmarks API", () => {
 
     const updated = await app.request(`http://localhost/api/bookmarks/${bookmark.id}`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
         url: "https://example.com/new",
         tags: " local, sqlite ",
@@ -136,10 +211,12 @@ describe("local server bookmarks API", () => {
       })
     });
     const deleted = await app.request(`http://localhost/api/bookmarks/${bookmark.id}`, {
-      method: "DELETE"
+      method: "DELETE",
+      headers: { cookie }
     });
     const missing = await app.request(`http://localhost/api/bookmarks/${bookmark.id}`, {
-      method: "DELETE"
+      method: "DELETE",
+      headers: { cookie }
     });
 
     expect(updated.status).toBe(200);
@@ -153,5 +230,45 @@ describe("local server bookmarks API", () => {
     });
     expect(deleted.status).toBe(204);
     expect(missing.status).toBe(404);
+  });
+  it("keeps bookmarks private to the account that created them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("<title>Changed</title>", { headers: { "content-type": "text/html" } }))
+    );
+    const alice = await signUp("alice@example.com");
+    const bob = await signUp("bob@example.com");
+    const aliceBookmark = addBookmark(
+      { url: "https://example.com/alice", title: "Alice" },
+      userIdFor("alice@example.com")
+    );
+    const app = createTestApp();
+    const jsonHeaders = (cookie: string) => ({ "content-type": "application/json", cookie });
+
+    const bobList = await app.request("http://localhost/api/bookmarks", { headers: { cookie: bob } });
+    const bobUpdate = await app.request(`http://localhost/api/bookmarks/${aliceBookmark.id}`, {
+      method: "PUT",
+      headers: jsonHeaders(bob),
+      body: JSON.stringify({ url: "https://example.com/hijacked" })
+    });
+    const bobDelete = await app.request(`http://localhost/api/bookmarks/${aliceBookmark.id}`, {
+      method: "DELETE",
+      headers: { cookie: bob }
+    });
+    const bobCreate = await app.request("http://localhost/api/bookmarks", {
+      method: "POST",
+      headers: jsonHeaders(bob),
+      body: JSON.stringify({ url: "https://example.com/alice" })
+    });
+    const aliceList = await app.request("http://localhost/api/bookmarks", { headers: { cookie: alice } });
+
+    await expect(bobList.json()).resolves.toMatchObject({ bookmarks: [], totalCount: 0 });
+    expect(bobUpdate.status).toBe(404);
+    expect(bobDelete.status).toBe(404);
+    expect(bobCreate.status).toBe(201);
+    await expect(aliceList.json()).resolves.toMatchObject({
+      bookmarks: [{ id: aliceBookmark.id, url: "https://example.com/alice", title: "Alice" }],
+      totalCount: 1
+    });
   });
 });
