@@ -15,9 +15,9 @@ CREATE TABLE bookmarks_new (
   UNIQUE (user_id, url)
 );
 
--- Existing bookmarks predate accounts; hand them to the earliest account.
+-- Keep legacy rows private until an administrator verifies and assigns their owner (see USAGE.md).
 INSERT INTO bookmarks_new (id, user_id, url, title, tags, memo, created_at, updated_at)
-SELECT id, (SELECT MIN(id) FROM users), url, title, tags, memo, created_at, updated_at
+SELECT id, NULL, url, title, tags, memo, created_at, updated_at
 FROM bookmarks;
 
 DROP TABLE bookmarks;

@@ -140,6 +140,11 @@ export const createApp = ({ db }: AppDependencies) => {
   };
 
   app.post("/api/auth/signup", async (c) => {
+    const mediaType = c.req.header("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (mediaType !== "application/json") {
+      return c.json({ error: "Content-Type must be application/json." }, 415);
+    }
+
     let payload: unknown;
     try {
       payload = await c.req.json();
@@ -183,6 +188,11 @@ export const createApp = ({ db }: AppDependencies) => {
   });
 
   app.post("/api/auth/login", async (c) => {
+    const mediaType = c.req.header("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (mediaType !== "application/json") {
+      return c.json({ error: "Content-Type must be application/json." }, 415);
+    }
+
     let payload: unknown;
     try {
       payload = await c.req.json();

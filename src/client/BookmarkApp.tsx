@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Bookmark } from "../shared/bookmarks";
 import type { AuthUser } from "../shared/auth";
 import { readError } from "./readError";
@@ -11,10 +11,6 @@ type BookmarksResponse = {
   pageSize: number;
   totalCount: number;
   totalPages: number;
-};
-
-type CreateBookmarkResponse = {
-  bookmark: Bookmark;
 };
 
 type FormState = {
@@ -86,14 +82,25 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Wraps fetch so every bookmark request sends the session cookie and a 401
-  // (expired or missing session) returns the user to the login screen. Returns
-  // null when the request was unauthorized so callers can stop early.
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const sessionGeneration = useRef(0);
+  const listGeneration = useRef(0);
+  const editGeneration = useRef(0);
+
+  // Invalidate work as soon as this session ends or the screen unmounts.
+  useLayoutEffect(() => () => {
+    sessionGeneration.current++;
+  }, []);
+
   const fetchWithAuth = useCallback(
-    async (input: string, init?: RequestInit) => {
+    async (input: string, init: RequestInit | undefined, isCurrent: () => boolean) => {
       const response = await fetch(input, { ...init, credentials: "include" });
       if (response.status === 401) {
-        onUnauthorized();
+        if (isCurrent()) {
+          sessionGeneration.current++;
+          onUnauthorized();
+        }
         return null;
       }
 
@@ -102,7 +109,10 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
     [onUnauthorized]
   );
 
-  const loadBookmarks = useCallback(async (targetPage = page, targetQuery = query) => {
+  const loadBookmarks = useCallback(async (targetPage: number, targetQuery: string) => {
+    const session = sessionGeneration.current;
+    const request = ++listGeneration.current;
+    const isCurrent = () => session === sessionGeneration.current && request === listGeneration.current;
     setIsLoading(true);
     setError(null);
 
@@ -110,13 +120,11 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
       const params = new URLSearchParams({ page: String(targetPage) });
       const trimmedQuery = targetQuery.trim();
       if (trimmedQuery) {
-        // The API splits this value by spaces and OR-searches each word.
         params.set("q", trimmedQuery);
       }
 
-      // Relative URLs call the same API origin in production.
-      const response = await fetchWithAuth(`/api/bookmarks?${params.toString()}`);
-      if (!response) {
+      const response = await fetchWithAuth(`/api/bookmarks?${params.toString()}`, undefined, isCurrent);
+      if (!response || !isCurrent()) {
         return;
       }
       if (!response.ok) {
@@ -124,60 +132,94 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
       }
 
       const data = (await response.json()) as BookmarksResponse;
-      setBookmarks(data.bookmarks);
-      setPage(data.page);
-      setTotalPages(data.totalPages);
-      setTotalCount(data.totalCount);
+      if (isCurrent()) {
+        setBookmarks(data.bookmarks);
+        setPage(data.page);
+        setTotalPages(data.totalPages);
+        setTotalCount(data.totalCount);
+      }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load bookmarks.");
+      if (isCurrent()) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load bookmarks.");
+      }
     } finally {
-      setIsLoading(false);
+      if (isCurrent()) {
+        setIsLoading(false);
+      }
     }
-  }, [page, query, fetchWithAuth]);
+  }, [fetchWithAuth]);
+
+  const cancelEditing = useCallback(() => {
+    editGeneration.current++;
+    setEditingId(null);
+    setEditForm(emptyForm);
+  }, []);
 
   useEffect(() => {
     const syncFromUrl = () => {
       const nextState = readUrlState();
+      cancelEditing();
       setSearchInput(nextState.query);
       setQuery(nextState.query);
-      // Back/forward navigation should show the same data as the URL.
       void loadBookmarks(nextState.page, nextState.query);
     };
 
-    const initialState = readUrlState();
-    setSearchInput(initialState.query);
-    setQuery(initialState.query);
-    // useEffect cannot be async directly, so we start the async function here.
-    void loadBookmarks(initialState.page, initialState.query);
-
+    syncFromUrl();
     window.addEventListener("popstate", syncFromUrl);
-
     return () => {
       window.removeEventListener("popstate", syncFromUrl);
     };
-  }, []);
+  }, [cancelEditing, loadBookmarks]);
 
   const updateForm = (field: keyof FormState, value: string) => {
     setForm((current) => ({ ...current, [field]: value }));
   };
 
   const updateEditForm = (field: keyof FormState, value: string) => {
+    editGeneration.current++;
     setEditForm((current) => ({ ...current, [field]: value }));
   };
 
   const handleLogout = async () => {
+    const session = sessionGeneration.current;
+    setIsLoggingOut(true);
+    setLogoutError(null);
     try {
-      await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+      const response = await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+      if (!response.ok) {
+        throw new Error("Logout failed");
+      }
+      if (session === sessionGeneration.current) {
+        sessionGeneration.current++;
+        onLogout();
+      }
+    } catch {
+      if (session === sessionGeneration.current) {
+        setLogoutError("Could not log out. Please try again.");
+      }
     } finally {
-      // Always return to the login screen, even if the request failed.
-      onLogout();
+      if (session === sessionGeneration.current) {
+        setIsLoggingOut(false);
+      }
     }
+  };
+
+  // Mutations may finish after search, pagination, or signout changed the screen.
+  const captureView = () => {
+    const session = sessionGeneration.current;
+    const list = listGeneration.current;
+    const isSameSession = () => session === sessionGeneration.current;
+    return {
+      isSameSession,
+      isSameView: () => isSameSession() && list === listGeneration.current
+    };
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     // Keep the browser from doing a full page reload when the form submits.
     event.preventDefault();
 
+    const { isSameSession, isSameView } = captureView();
     setIsSaving(true);
     setError(null);
 
@@ -189,7 +231,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
           "content-type": "application/json"
         },
         body: JSON.stringify({ url: form.url })
-      });
+      }, isSameSession);
       if (!response) {
         return;
       }
@@ -198,19 +240,27 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
         throw new Error(await readError(response));
       }
 
-      await response.json() as CreateBookmarkResponse;
-      setForm(emptyForm);
-      setEditingId(null);
+      if (isSameSession()) {
+        setForm((current) => current === form ? emptyForm : current);
+      }
+      if (!isSameView()) {
+        return;
+      }
       pushUrlState(1, query);
       await loadBookmarks(1, query);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Failed to save bookmark.");
+      if (isSameView()) {
+        setError(saveError instanceof Error ? saveError.message : "Failed to save bookmark.");
+      }
     } finally {
-      setIsSaving(false);
+      if (isSameSession()) {
+        setIsSaving(false);
+      }
     }
   };
 
   const startEditing = (bookmark: Bookmark) => {
+    editGeneration.current++;
     setEditingId(bookmark.id);
     setEditForm({
       url: bookmark.url,
@@ -219,14 +269,11 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
     });
   };
 
-  const cancelEditing = () => {
-    setEditingId(null);
-    setEditForm(emptyForm);
-  };
-
   const handleUpdate = async (event: FormEvent<HTMLFormElement>, id: number) => {
     event.preventDefault();
 
+    const { isSameSession, isSameView } = captureView();
+    const edit = editGeneration.current;
     setIsSaving(true);
     setError(null);
 
@@ -237,7 +284,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
           "content-type": "application/json"
         },
         body: JSON.stringify(editForm)
-      });
+      }, isSameSession);
       if (!response) {
         return;
       }
@@ -246,13 +293,20 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
         throw new Error(await readError(response));
       }
 
-      setEditingId(null);
-      setEditForm(emptyForm);
-      await loadBookmarks(page, query);
+      if (isSameView()) {
+        if (edit === editGeneration.current) {
+          cancelEditing();
+        }
+        await loadBookmarks(page, query);
+      }
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Failed to update bookmark.");
+      if (isSameView()) {
+        setError(updateError instanceof Error ? updateError.message : "Failed to update bookmark.");
+      }
     } finally {
-      setIsSaving(false);
+      if (isSameSession()) {
+        setIsSaving(false);
+      }
     }
   };
 
@@ -261,13 +315,14 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
       return;
     }
 
+    const { isSameSession, isSameView } = captureView();
     setIsSaving(true);
     setError(null);
 
     try {
       const response = await fetchWithAuth(`/api/bookmarks/${bookmark.id}`, {
         method: "DELETE"
-      });
+      }, isSameSession);
       if (!response) {
         return;
       }
@@ -276,14 +331,20 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
         throw new Error(await readError(response));
       }
 
-      setEditingId(null);
+      if (!isSameView()) {
+        return;
+      }
       const targetPage = bookmarks.length === 1 && page > 1 ? page - 1 : page;
       pushUrlState(targetPage, query);
       await loadBookmarks(targetPage, query);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete bookmark.");
+      if (isSameView()) {
+        setError(deleteError instanceof Error ? deleteError.message : "Failed to delete bookmark.");
+      }
     } finally {
-      setIsSaving(false);
+      if (isSameSession()) {
+        setIsSaving(false);
+      }
     }
   };
 
@@ -292,7 +353,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
       return;
     }
 
-    setEditingId(null);
+    cancelEditing();
     pushUrlState(targetPage, query);
     await loadBookmarks(targetPage, query);
   };
@@ -304,7 +365,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
     // Store the active query separately from what the user is typing. This keeps
     // pagination stable until the user submits the search form.
     setQuery(nextQuery);
-    setEditingId(null);
+    cancelEditing();
     pushUrlState(1, nextQuery);
     await loadBookmarks(1, nextQuery);
   };
@@ -312,7 +373,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
   const clearSearch = async () => {
     setSearchInput("");
     setQuery("");
-    setEditingId(null);
+    cancelEditing();
     pushUrlState(1, "");
     await loadBookmarks(1, "");
   };
@@ -320,13 +381,15 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
   return (
     <main className="app-shell">
       <header className="account-bar">
-        <span className="account-email" aria-label="Signed in as">
-          {user.email}
+        <span className="account-email">
+          Signed in as {user.email}
         </span>
-        <button type="button" className="secondary-button" onClick={handleLogout}>
+        <button type="button" className="secondary-button" onClick={handleLogout} disabled={isLoggingOut}>
           Log out
         </button>
       </header>
+
+      {logoutError ? <div className="status status-error" role="alert">{logoutError}</div> : null}
 
       <section className="toolbar" aria-labelledby="app-title">
         <div>
@@ -346,7 +409,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
             placeholder="https://example.com"
             required
           />
-          <button type="submit" disabled={isSaving}>
+          <button type="submit" disabled={isSaving || isLoading}>
             {isSaving ? "Saving" : "Add"}
           </button>
         </form>
@@ -426,7 +489,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
                   />
                 </label>
                 <div className="item-actions">
-                  <button type="submit" disabled={isSaving}>
+                  <button type="submit" disabled={isSaving || isLoading}>
                     Save
                   </button>
                   <button type="button" className="secondary-button" onClick={cancelEditing}>
@@ -466,7 +529,7 @@ export function BookmarkApp({ user, onLogout, onUnauthorized }: BookmarkAppProps
                     type="button"
                     className="icon-button danger-icon-button"
                     onClick={() => handleDelete(bookmark)}
-                    disabled={isSaving}
+                    disabled={isSaving || isLoading}
                     aria-label={`Delete ${bookmark.title}`}
                     title="Delete"
                   >

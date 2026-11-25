@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/client/App";
@@ -61,13 +61,29 @@ describe("App auth gate", () => {
     expect(screen.queryByLabelText("Bookmarks")).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["a service outage", () => Promise.resolve(new Response(null, { status: 503 }))],
+    ["a network error", () => Promise.reject(new TypeError("Failed to fetch"))]
+  ])("lets the user retry the session check after %s", async (_failure, respond) => {
+    mockFetch.mockImplementationOnce(respond).mockResolvedValueOnce(unauthorized());
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not check your session.");
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/auth/me", { credentials: "include" });
+  });
+
   it("shows the bookmark app when a session exists", async () => {
     mockFetch.mockResolvedValueOnce(meResponse()).mockResolvedValueOnce(bookmarksResponse([makeBookmark()]));
 
     render(<App />);
 
     expect(await screen.findByRole("link", { name: "Example" })).toBeInTheDocument();
-    expect(screen.getByText("person@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Signed in as person@example.com")).toBeInTheDocument();
   });
 
   it("toggles between login and account creation", async () => {
@@ -81,6 +97,48 @@ describe("App auth gate", () => {
     await userEvent.click(screen.getByRole("button", { name: "Need an account? Create one" }));
 
     expect(screen.getByRole("button", { name: "Create account" })).toBeInTheDocument();
+  });
+
+  const submitSignup = async (password: string) => {
+    await userEvent.type(await screen.findByLabelText("Email"), user.email);
+    await userEvent.click(screen.getByRole("button", { name: "Need an account? Create one" }));
+    await userEvent.type(screen.getByLabelText("Password"), password);
+    await userEvent.click(screen.getByRole("button", { name: "Create account" }));
+  };
+
+  it("posts signup credentials and opens the bookmark app", async () => {
+    mockFetch.mockResolvedValueOnce(unauthorized())
+      .mockResolvedValueOnce(Response.json({ user }, { status: 201 }))
+      .mockResolvedValueOnce(bookmarksResponse([makeBookmark()]));
+
+    render(<App />);
+    await submitSignup("password123");
+
+    expect(await screen.findByRole("link", { name: "Example" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/auth/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email: user.email, password: "password123" })
+    });
+  });
+
+  it.each([
+    [409, "An account with this email already exists.", "password123", "Email"],
+    [400, "Password must meet the length requirements.", "short", "Password"]
+  ])("shows a signup error for status %i and clears it on input", async (status, error, password, field) => {
+    mockFetch.mockResolvedValueOnce(unauthorized())
+      .mockResolvedValueOnce(Response.json({ error }, { status }));
+
+    render(<App />);
+    await submitSignup(password);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(error);
+    expect(screen.getByRole("heading", { name: "Create account" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Bookmarks")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(field), "x");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("logs in and then shows the bookmark app", async () => {
@@ -132,6 +190,31 @@ describe("App auth gate", () => {
 
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Example" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["a network error", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["a non-success response", () => Promise.resolve(new Response(null, { status: 503 }))]
+  ])("keeps the bookmark app open and allows retry after %s during logout", async (_failure, respond) => {
+    mockFetch.mockResolvedValueOnce(meResponse())
+      .mockResolvedValueOnce(bookmarksResponse([makeBookmark()]))
+      .mockImplementationOnce(respond)
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    render(<App />);
+    await screen.findByRole("link", { name: "Example" });
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not log out. Please try again.");
+    expect(screen.getByRole("link", { name: "Example" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(mockFetch).toHaveBeenNthCalledWith(4, "/api/auth/logout", {
+      method: "POST",
+      credentials: "include"
+    });
   });
 
   it("returns to the login screen when a bookmark request is unauthorized", async () => {

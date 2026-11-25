@@ -89,7 +89,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               type="email"
               autoComplete="email"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              disabled={isSubmitting}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setError(null);
+              }}
               required
             />
           </label>
@@ -100,7 +104,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               type="password"
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              disabled={isSubmitting}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setError(null);
+              }}
               required
             />
           </label>

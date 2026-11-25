@@ -105,6 +105,25 @@ describe("authentication API", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  it.each(["signup", "login"])("requires a JSON Content-Type for %s", async (route) => {
+    const credentials = { email: "person@example.com", password: "password123" };
+    const app = createTestApp();
+    const path = `http://localhost/api/auth/${route}`;
+    const missingHeader = await app.request(path, {
+      method: "POST",
+      body: new TextEncoder().encode(JSON.stringify(credentials))
+    });
+    const plainText = await app.request(path, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify(credentials)
+    });
+
+    expect(missingHeader.status).toBe(415);
+    expect(plainText.status).toBe(415);
+    expect(db.findUserByEmail(credentials.email)).toBeNull();
+  });
+
   it("signs up a new account and sets an HttpOnly session cookie", async () => {
     const response = await jsonRequest("/api/auth/signup", {
       email: "Person@Example.com",

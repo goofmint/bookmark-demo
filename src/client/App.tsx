@@ -3,12 +3,10 @@ import type { AuthResponse, AuthUser } from "../shared/auth";
 import { AuthScreen } from "./AuthScreen";
 import { BookmarkApp } from "./BookmarkApp";
 
-// Decides which screen to show based on the current session. While the initial
-// /api/auth/me check is in flight we show a small loading state; after that the
-// user sees either the login screen or the bookmark app.
 export function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [isChecking, setIsChecking] = useState(true);
+  const [sessionStatus, setSessionStatus] = useState<"checking" | "ready" | "error">("checking");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -16,42 +14,59 @@ export function App() {
     const checkSession = async () => {
       try {
         const response = await fetch("/api/auth/me", { credentials: "include" });
-        if (!active) {
+        if (response.status === 401) {
+          if (active) {
+            setUser(null);
+            setSessionStatus("ready");
+          }
           return;
         }
+        if (!response.ok) {
+          throw new Error("Session check failed.");
+        }
 
-        if (response.ok) {
-          const data = (await response.json()) as AuthResponse;
+        const data = (await response.json()) as AuthResponse;
+        if (active) {
           setUser(data.user);
-        } else {
-          setUser(null);
+          setSessionStatus("ready");
         }
       } catch {
         if (active) {
-          setUser(null);
-        }
-      } finally {
-        if (active) {
-          setIsChecking(false);
+          setSessionStatus("error");
         }
       }
     };
 
     void checkSession();
-
     return () => {
       active = false;
     };
-  }, []);
+  }, [attempt]);
 
   const handleSignedOut = useCallback(() => {
     setUser(null);
   }, []);
 
-  if (isChecking) {
+  if (sessionStatus === "checking") {
     return (
       <main className="auth-shell">
         <div className="status">Loading...</div>
+      </main>
+    );
+  }
+
+  if (sessionStatus === "error") {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <p role="alert">Could not check your session.</p>
+          <button type="button" onClick={() => {
+            setSessionStatus("checking");
+            setAttempt((previous) => previous + 1);
+          }}>
+            Retry
+          </button>
+        </section>
       </main>
     );
   }
